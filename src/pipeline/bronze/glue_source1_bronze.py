@@ -31,23 +31,23 @@ RUN_DATE = datetime.utcnow().strftime("%Y/%m/%d")
 
 # Fetch credentials from Secrets Manager at runtime
 _secret = json.loads(
-    boto3.client("secretsmanager").get_secret_value(
-        SecretId=args["orders_secret_arn"]
-    )["SecretString"]
+    boto3.client("secretsmanager").get_secret_value(SecretId=args["orders_secret_arn"])[
+        "SecretString"
+    ]
 )
-JDBC_URL  = f"jdbc:postgresql://{_secret['host']}:5432/{_secret['dbname']}"
+JDBC_URL = f"jdbc:postgresql://{_secret['host']}:5432/{_secret['dbname']}"
 JDBC_PROPS = {
-    "user":     _secret["username"],
+    "user": _secret["username"],
     "password": _secret["password"],
-    "driver":   "org.postgresql.Driver",
-    "sslmode":  "require",
+    "driver": "org.postgresql.Driver",
+    "sslmode": "require",
 }
 
 # (table, partition_col, num_partitions, upper_bound)
 TABLES = [
-    ("orders",               "order_id", 4,  3_500_000),
+    ("orders", "order_id", 4, 3_500_000),
     ("order_products_prior", "order_id", 16, 3_500_000),
-    ("order_products_train", "order_id", 4,  3_500_000),
+    ("order_products_train", "order_id", 4, 3_500_000),
 ]
 
 for table, part_col, num_parts, upper in TABLES:

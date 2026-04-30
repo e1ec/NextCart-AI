@@ -34,12 +34,12 @@ def transform_orders(df):
     df = (
         df
         # Cast to correct types
-        .withColumn("order_id",              F.col("order_id").cast(IntegerType()))
-        .withColumn("user_id",               F.col("user_id").cast(IntegerType()))
-        .withColumn("eval_set",              F.col("eval_set").cast(StringType()))
-        .withColumn("order_number",          F.col("order_number").cast(IntegerType()))
-        .withColumn("order_dow",             F.col("order_dow").cast(ShortType()))
-        .withColumn("order_hour_of_day",     F.col("order_hour_of_day").cast(ShortType()))
+        .withColumn("order_id", F.col("order_id").cast(IntegerType()))
+        .withColumn("user_id", F.col("user_id").cast(IntegerType()))
+        .withColumn("eval_set", F.col("eval_set").cast(StringType()))
+        .withColumn("order_number", F.col("order_number").cast(IntegerType()))
+        .withColumn("order_dow", F.col("order_dow").cast(ShortType()))
+        .withColumn("order_hour_of_day", F.col("order_hour_of_day").cast(ShortType()))
         .withColumn("days_since_prior_order", F.col("days_since_prior_order").cast(FloatType()))
         # Drop mandatory-null rows
         .filter(F.col("order_id").isNotNull() & F.col("user_id").isNotNull())
@@ -62,11 +62,10 @@ def transform_order_products(df, table_name: str):
     initial_count = df.count()
 
     df = (
-        df
-        .withColumn("order_id",          F.col("order_id").cast(IntegerType()))
-        .withColumn("product_id",        F.col("product_id").cast(IntegerType()))
+        df.withColumn("order_id", F.col("order_id").cast(IntegerType()))
+        .withColumn("product_id", F.col("product_id").cast(IntegerType()))
         .withColumn("add_to_cart_order", F.col("add_to_cart_order").cast(ShortType()))
-        .withColumn("reordered",         F.col("reordered").cast(ShortType()))
+        .withColumn("reordered", F.col("reordered").cast(ShortType()))
         .filter(F.col("order_id").isNotNull() & F.col("product_id").isNotNull())
         .filter(F.col("reordered").isin(0, 1))
         .filter(F.col("add_to_cart_order") >= 1)
@@ -81,9 +80,9 @@ def transform_order_products(df, table_name: str):
 
 # ── Process each table ───────────────────────────────────────
 for table, transform_fn, partition_cols in [
-    ("orders",                lambda df: transform_orders(df),                      ["eval_set"]),
-    ("order_products_prior",  lambda df: transform_order_products(df, "order_products_prior"), []),
-    ("order_products_train",  lambda df: transform_order_products(df, "order_products_train"), []),
+    ("orders", lambda df: transform_orders(df), ["eval_set"]),
+    ("order_products_prior", lambda df: transform_order_products(df, "order_products_prior"), []),
+    ("order_products_train", lambda df: transform_order_products(df, "order_products_train"), []),
 ]:
     print(f"\nProcessing {table}...")
 
@@ -97,8 +96,7 @@ for table, transform_fn, partition_cols in [
     )
     if quarantine_df.count() > 0:
         (
-            quarantine_df
-            .withColumn("_rejection_reason", F.lit(f"null_mandatory_key in {table}"))
+            quarantine_df.withColumn("_rejection_reason", F.lit(f"null_mandatory_key in {table}"))
             .withColumn("_quarantine_ts", F.current_timestamp())
             .write.mode("append")
             .parquet(f"s3://{LAKE_BUCKET}/quarantine/orders/{table}/")

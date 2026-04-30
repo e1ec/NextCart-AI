@@ -30,20 +30,26 @@ RUN_DATE = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 s3 = boto3.client("s3")
 
 SCHEMAS = {
-    "products": pa.schema([
-        pa.field("product_id",    pa.int32()),
-        pa.field("product_name",  pa.string()),
-        pa.field("aisle_id",      pa.int16()),
-        pa.field("department_id", pa.int16()),
-    ]),
-    "aisles": pa.schema([
-        pa.field("aisle_id", pa.int16()),
-        pa.field("aisle",    pa.string()),
-    ]),
-    "departments": pa.schema([
-        pa.field("department_id", pa.int16()),
-        pa.field("department",    pa.string()),
-    ]),
+    "products": pa.schema(
+        [
+            pa.field("product_id", pa.int32()),
+            pa.field("product_name", pa.string()),
+            pa.field("aisle_id", pa.int16()),
+            pa.field("department_id", pa.int16()),
+        ]
+    ),
+    "aisles": pa.schema(
+        [
+            pa.field("aisle_id", pa.int16()),
+            pa.field("aisle", pa.string()),
+        ]
+    ),
+    "departments": pa.schema(
+        [
+            pa.field("department_id", pa.int16()),
+            pa.field("department", pa.string()),
+        ]
+    ),
 }
 
 
