@@ -19,8 +19,9 @@ def _get_db_url() -> str:
 
     secret_arn = os.environ["DB_SECRET_ARN"]
     secret = json.loads(
-        boto3.client("secretsmanager", region_name=os.environ["AWS_REGION_NAME"])
-        .get_secret_value(SecretId=secret_arn)["SecretString"]
+        boto3.client("secretsmanager", region_name=os.environ["AWS_REGION_NAME"]).get_secret_value(
+            SecretId=secret_arn
+        )["SecretString"]
     )
     return (
         f"postgresql+psycopg2://{secret['username']}:{secret['password']}"
