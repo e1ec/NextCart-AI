@@ -1,5 +1,5 @@
 # NextCart — Deployment Operations Manual
-**Covers: Week 1 + Week 2 (Source 1 + Source 2, excluding Source 3 Kinesis)**
+**Covers: Week 1–3 (Source 1 + Source 2, Silver Pipeline, EMR + Gold Features)**
 
 ---
 
@@ -17,6 +17,7 @@
 | Phase 7 — Silver Pipeline | **本地终端**发指令 | AWS Glue 在云上跑 |
 | Phase 8 — 验证 | **本地终端** | 你手动运行 |
 | Phase 9 — GitHub & CI/CD | **本地终端** + **GitHub** | 你初始化仓库，Actions 自动运行 |
+| Phase 10 — EMR + Gold Features | **本地终端**发指令 | AWS EMR 在云上跑 PySpark |
 | CI/CD（后续） | **自动触发**（push 代码） | GitHub Actions → AWS |
 
 > **终端推荐**：Windows 用 **Git Bash** 或 **WSL2**（手册命令全是 bash 语法）。PowerShell 也可以但部分语法需要调整。
@@ -1157,4 +1158,119 @@ aws ec2 describe-vpc-endpoints \
 # ── 成本检查 ─────────────────────────────────────────────────────────────────
 aws rds describe-db-instances \
   --query 'DBInstances[?contains(DBInstanceIdentifier,`nextcart`)].{ID:DBInstanceIdentifier,Status:DBInstanceStatus,Class:DBInstanceClass}'
+```
+
+---
+
+## Phase 10 — EMR + Gold Feature Engineering
+
+### 10.1 部署 EMR 集群
+
+EMR 模块已在 `infra/terraform/modules/emr/` 实现，需要 `terraform apply` 创建集群。
+
+```bash
+cd "infra/terraform/environments/dev"
+terraform apply -target=module.emr
+```
+
+> EMR 集群启动约需 **8–12 分钟**，状态变为 `WAITING` 后才能提交作业。
+
+验证集群状态：
+```bash
+# 获取集群 ID
+CLUSTER_ID=$(terraform output -raw emr_cluster_id)
+echo "Cluster ID: ${CLUSTER_ID}"
+
+# 检查状态（等待 WAITING）
+aws emr describe-cluster --cluster-id ${CLUSTER_ID} \
+  --query 'Cluster.Status.State' --output text
+```
+
+### 10.2 上传 Gold 脚本到 S3
+
+```bash
+SCRIPTS_BUCKET=$(terraform output -raw glue_scripts_bucket)
+
+aws s3 cp src/pipeline/gold/reorder_features.py \
+  s3://${SCRIPTS_BUCKET}/gold/reorder_features.py
+
+aws s3 cp src/pipeline/gold/recommendation_features.py \
+  s3://${SCRIPTS_BUCKET}/gold/recommendation_features.py
+```
+
+### 10.3 运行 Task A Gold Job（Reorder Features）
+
+```bash
+CLUSTER_ID=$(terraform output -raw emr_cluster_id)
+LAKE_BUCKET=$(terraform output -raw lake_bucket)
+SCRIPTS_BUCKET=$(terraform output -raw glue_scripts_bucket)
+
+STEP_ID=$(aws emr add-steps \
+  --cluster-id ${CLUSTER_ID} \
+  --steps Type=Spark,Name="reorder-features",\
+ActionOnFailure=CONTINUE,\
+Args=[--deploy-mode,cluster,\
+--master,yarn,\
+s3://${SCRIPTS_BUCKET}/gold/reorder_features.py,\
+--lake_bucket,${LAKE_BUCKET}] \
+  --query 'StepIds[0]' --output text)
+
+echo "Step ID: ${STEP_ID}"
+
+# 查看进度（约 10–20 分钟）
+aws emr describe-step --cluster-id ${CLUSTER_ID} --step-id ${STEP_ID} \
+  --query 'Step.Status.State' --output text
+```
+
+### 10.4 运行 Task B Gold Job（Recommendation Features）
+
+```bash
+STEP_ID=$(aws emr add-steps \
+  --cluster-id ${CLUSTER_ID} \
+  --steps Type=Spark,Name="recommendation-features",\
+ActionOnFailure=CONTINUE,\
+Args=[--deploy-mode,cluster,\
+--master,yarn,\
+s3://${SCRIPTS_BUCKET}/gold/recommendation_features.py,\
+--lake_bucket,${LAKE_BUCKET}] \
+  --query 'StepIds[0]' --output text)
+
+echo "Step ID: ${STEP_ID}"
+aws emr describe-step --cluster-id ${CLUSTER_ID} --step-id ${STEP_ID} \
+  --query 'Step.Status.State' --output text
+```
+
+### 10.5 验证 Gold 数据
+
+```bash
+# 检查 reorder_features Parquet 文件
+aws s3 ls s3://${LAKE_BUCKET}/gold/reorder_features/ --recursive | head -10
+
+# 检查 interaction_matrix
+aws s3 ls s3://${LAKE_BUCKET}/gold/interaction_matrix/ --recursive | head -5
+
+# 检查 product_vectors
+aws s3 ls s3://${LAKE_BUCKET}/gold/product_vectors/ --recursive | head -5
+```
+
+### Phase 10 已知问题排查
+
+| 错误 | 原因 | 解决方法 |
+|------|------|---------|
+| Step 状态一直 `PENDING` | 集群还在启动 | 等集群状态变为 `WAITING` 再提交 Step |
+| `FAILED: Application failed` | 脚本路径或参数错误 | `aws emr describe-step` 查看 `FailureDetails.Reason` |
+| S3 写入 permission denied | EMR EC2 角色缺少 lake bucket 权限 | IAM 模块已授权 `AmazonElasticMapReduceforEC2Role`，检查 bucket name 拼写 |
+| 集群自动终止（idle 1h） | `auto_termination_policy` 生效 | `terraform apply -target=module.emr` 重新创建集群 |
+
+### 查看 EMR Step 日志
+
+```bash
+MSYS_NO_PATHCONV=1 aws emr describe-step \
+  --cluster-id ${CLUSTER_ID} --step-id ${STEP_ID} \
+  --query 'Step.Status.FailureDetails'
+
+# 直接看 stdout 日志
+LOG_DIR=$(aws emr describe-cluster --cluster-id ${CLUSTER_ID} \
+  --query 'Cluster.LogUri' --output text)
+aws s3 ls ${LOG_DIR}steps/${STEP_ID}/
 ```

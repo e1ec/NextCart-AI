@@ -115,6 +115,20 @@ module "glue" {
   sg_glue_id          = module.vpc.sg_glue_id
 }
 
+# ── EMR (Gold feature engineering + ML training) ─────────────
+module "emr" {
+  source               = "../../modules/emr"
+  project              = local.project
+  environment          = local.environment
+  region               = local.region
+  emr_service_role_arn = module.iam.emr_service_role_arn
+  emr_ec2_profile_arn  = module.iam.emr_ec2_profile_arn
+  vpc_id               = module.vpc.vpc_id
+  subnet_id            = module.vpc.public_subnet_ids[0]
+  lake_bucket          = module.s3.bucket_name
+  scripts_bucket       = module.glue.glue_scripts_bucket
+}
+
 # ── Outputs ──────────────────────────────────────────────────
 output "source2_api_url"        { value = module.lambda.source2_api_url }
 output "sg_rds_id"              { value = module.vpc.sg_rds_id }
@@ -124,3 +138,4 @@ output "orders_db_endpoint"     { value = module.rds_orders.endpoint }
 output "orders_db_secret_arn"   { value = module.rds_orders.secret_arn }
 output "products_db_endpoint"   { value = module.rds_products.endpoint }
 output "products_db_secret_arn" { value = module.rds_products.secret_arn }
+output "emr_cluster_id"         { value = module.emr.cluster_id }
