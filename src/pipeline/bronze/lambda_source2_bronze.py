@@ -5,7 +5,8 @@ to S3 bronze zone as Parquet via PyArrow.
 
 Environment variables:
   LAKE_BUCKET   S3 bucket name
-  API_BASE_URL  Base URL of Source 2 API (e.g. https://xxxx.execute-api.ap-southeast-2.amazonaws.com/dev)
+  API_BASE_URL  Base URL of Source 2 API
+                (e.g. https://xxxx.execute-api.ap-southeast-2.amazonaws.com/dev)
 """
 
 import io

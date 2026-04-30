@@ -33,7 +33,10 @@ products_df     = spark.read.parquet(f"{BRONZE}/products/")
 aisles_df       = spark.read.parquet(f"{BRONZE}/aisles/")
 departments_df  = spark.read.parquet(f"{BRONZE}/departments/")
 
-print(f"Bronze counts: products={products_df.count():,}  aisles={aisles_df.count():,}  depts={departments_df.count():,}")
+print(
+    f"Bronze counts: products={products_df.count():,}  "
+    f"aisles={aisles_df.count():,}  depts={departments_df.count():,}"
+)
 
 # ── Cast types ───────────────────────────────────────────────
 products_df = (

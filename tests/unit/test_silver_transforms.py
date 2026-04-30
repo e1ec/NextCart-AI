@@ -7,8 +7,8 @@ import pytest
 
 pytest.importorskip("pyspark", reason="PySpark not installed — skipping Spark unit tests")
 
-from pyspark.sql import SparkSession
-from pyspark.sql import functions as F
+from pyspark.sql import SparkSession  # noqa: E402
+from pyspark.sql import functions as F  # noqa: E402
 
 
 @pytest.fixture(scope="module")

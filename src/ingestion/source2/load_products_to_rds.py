@@ -78,7 +78,8 @@ def load_all(conn: psycopg2.extensions.connection) -> None:
     for filename, table, cols in [
         ("departments.csv", "departments", ["department_id", "department"]),
         ("aisles.csv",      "aisles",      ["aisle_id", "aisle"]),
-        ("products.csv",    "products",    ["product_id", "product_name", "aisle_id", "department_id"]),
+        ("products.csv",    "products",
+         ["product_id", "product_name", "aisle_id", "department_id"]),
     ]:
         df = pd.read_csv(os.path.join(DATA_DIR, filename))
         rows = [tuple(r) for r in df[cols].itertuples(index=False)]
