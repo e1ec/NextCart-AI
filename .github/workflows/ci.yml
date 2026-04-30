@@ -24,7 +24,7 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements-dev.txt
-      - run: pytest tests/unit/ tests/data_quality/ -v -m "not integration" --cov=src --cov-fail-under=30
+      - run: pytest tests/unit/ tests/data_quality/ -v -m "not integration" --cov=src --cov-fail-under=80
 
   tf-validate:
     runs-on: ubuntu-latest
