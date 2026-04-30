@@ -1,0 +1,10 @@
+variable "project"               { type = string }
+variable "environment"           { type = string }
+variable "region"                { type = string }
+variable "lambda_role_arn"       { type = string }
+variable "lake_bucket"           { type = string }
+variable "src_path"              { type = string }
+variable "private_subnet_ids"    { type = list(string) }
+variable "sg_lambda_vpc_id"      { type = string }
+variable "products_db_secret_arn" { type = string }
+variable "glue_scripts_bucket"   { type = string }

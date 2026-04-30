@@ -1,0 +1,59 @@
+# Data — large files never committed
+data/raw/
+data/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+.terraform.lock.hcl
+override.tf
+override.tf.json
+
+# Notebooks — outputs stripped by pre-commit (nbstripout)
+# .ipynb files themselves are committed, outputs are not
+*.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# AWS credentials — never commit
+.aws/
+credentials
+
+# Lambda build artifacts — binary, large, platform-specific
+infra/terraform/modules/lambda/build/
+
+# Terraform backend config — contains account-specific bucket/table names
+backend.tfvars
+infra/terraform/environments/*/backend.tfvars
+
+# Local Terraform output snapshots
+outputs_dev.json
+infra/terraform/outputs_dev.json

@@ -1,0 +1,59 @@
+name: Deploy — Prod
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  tf-plan-prod:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+      - run: |
+          cd infra/terraform/environments/prod
+          terraform init
+          terraform plan -out=tfplan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-prod
+          path: infra/terraform/environments/prod/tfplan
+
+  manual-approval:
+    needs: tf-plan-prod
+    runs-on: ubuntu-latest
+    environment: production        # GitHub Environment with required reviewers
+    steps:
+      - run: echo "Approved — proceeding to prod deploy"
+
+  tf-apply-prod:
+    needs: manual-approval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+          path: infra/terraform/environments/prod/
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+      - run: |
+          cd infra/terraform/environments/prod
+          terraform init
+          terraform apply tfplan
