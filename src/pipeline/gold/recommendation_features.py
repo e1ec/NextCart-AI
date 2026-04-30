@@ -4,6 +4,7 @@ Builds the user-product interaction matrix and product content vectors.
 
 EMR Step args:
   --lake_bucket   S3 bucket name (nextcart-dev-lake)
+  --local         Run in local[*] mode with s3a:// (dev machine, no EMR needed)
 
 Outputs:
   s3://{lake_bucket}/gold/interaction_matrix/   (user_id, product_id, score)
@@ -19,13 +20,29 @@ from pyspark.sql.types import FloatType
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--lake_bucket", required=True)
+parser.add_argument("--local", action="store_true", help="Run locally (not on EMR)")
 args = parser.parse_args()
 
-LAKE = args.lake_bucket
-SILVER = f"s3://{LAKE}/silver"
-GOLD = f"s3://{LAKE}/gold"
+scheme = "s3a" if args.local else "s3"
+LAKE = f"{scheme}://{args.lake_bucket}"
+SILVER = f"{LAKE}/silver"
+GOLD = f"{LAKE}/gold"
 
-spark = SparkSession.builder.appName("nextcart-recommendation-features").getOrCreate()
+builder = SparkSession.builder.appName("nextcart-recommendation-features")
+if args.local:
+    builder = (
+        builder.master("local[*]")
+        .config(
+            "spark.jars.packages",
+            "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
+        )
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config(
+            "spark.hadoop.fs.s3a.aws.credentials.provider",
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        )
+    )
+spark = builder.getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
 
 print("Reading silver tables...")

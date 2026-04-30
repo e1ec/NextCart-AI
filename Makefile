@@ -1,7 +1,7 @@
 .PHONY: install lint format test test-all generate-samples \
         tf-init-dev tf-plan-dev tf-apply-dev \
         load-source1 load-source2 api-up simulate-stream \
-        run-bronze run-silver run-gold \
+        run-bronze run-silver run-gold run-gold-local \
         train-xgboost train-lightgbm train-als
 
 # ── Environment ──────────────────────────────────────────────
@@ -65,6 +65,12 @@ run-silver:
 run-gold:
 	python src/pipeline/gold/reorder_features.py --env local
 	python src/pipeline/gold/recommendation_features.py --env local
+
+run-gold-local:
+	python src/pipeline/gold/reorder_features.py \
+	  --lake_bucket nextcart-dev-lake --local
+	python src/pipeline/gold/recommendation_features.py \
+	  --lake_bucket nextcart-dev-lake --local
 
 # ── ML Training ──────────────────────────────────────────────
 train-xgboost:

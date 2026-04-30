@@ -1162,31 +1162,102 @@ aws rds describe-db-instances \
 
 ---
 
-## Phase 10 — EMR + Gold Feature Engineering
+## Phase 10 — Gold Feature Engineering
 
-### 10.1 部署 EMR 集群
+两种执行方式，选择其一：
 
-EMR 模块已在 `infra/terraform/modules/emr/` 实现，需要 `terraform apply` 创建集群。
+| | 方案 A — 本地 PySpark | 方案 B — AWS EMR |
+|---|---|---|
+| 适用场景 | 账号不支持 EMR / 快速调试 | 生产级全量数据 |
+| 数据读写 | 直接读写 S3（s3a://） | EMR Step 读写 S3（s3://） |
+| 前置条件 | Java 11 + PySpark | EMR 订阅 + terraform apply |
+| 运行时间（全量） | 30–60 min（本机单核） | 10–20 min（云端 m5.xlarge）|
+
+---
+
+### 方案 A — 本地 PySpark（无需 EMR）
+
+#### A.1 安装前置依赖
+
+需要 **Java 11**（PySpark 必须）和 **PySpark**：
 
 ```bash
-cd "infra/terraform/environments/dev"
+# 验证 Java 版本（需要 8、11 或 17）
+java -version
+
+# 安装 PySpark（已在 requirements-dev.txt 中）
+pip install pyspark==3.5.0
+```
+
+> **Windows 用户**：还需安装 [WinUtils](https://github.com/cdarlint/winutils)，下载 hadoop-3.3.x 对应的 `winutils.exe`，放入任意目录，然后设置 `HADOOP_HOME` 环境变量指向该目录。
+
+#### A.2 确认 AWS 凭证已配置
+
+```bash
+# 脚本通过 DefaultAWSCredentialsProviderChain 读取凭证
+# 确保 AWS_PROFILE 或 ~/.aws/credentials 已配置
+aws sts get-caller-identity
+```
+
+#### A.3 运行 Gold Jobs
+
+```bash
+# 获取 lake bucket 名称
+cd infra/terraform/environments/dev
+LAKE_BUCKET=$(terraform output -raw lake_bucket)
+cd -
+
+# Task A — Reorder Features（首次运行会下载 hadoop-aws JAR，约 1–2 分钟）
+python src/pipeline/gold/reorder_features.py \
+  --lake_bucket ${LAKE_BUCKET} \
+  --local
+
+# Task B — Recommendation Features
+python src/pipeline/gold/recommendation_features.py \
+  --lake_bucket ${LAKE_BUCKET} \
+  --local
+
+# 或用 Makefile（lake_bucket 已硬编码为 nextcart-dev-lake）
+make run-gold-local
+```
+
+> 首次运行时 PySpark 会从 Maven 下载 `hadoop-aws` 和 `aws-java-sdk-bundle` JAR（约 200 MB），之后缓存在 `~/.ivy2/`，后续运行不再下载。
+
+#### A.4 本地运行排查
+
+| 错误 | 原因 | 解决方法 |
+|------|------|---------|
+| `JAVA_HOME not set` | Java 未安装或环境变量未配置 | 安装 Java 11，设置 `JAVA_HOME` |
+| `Failed to load class S3AFileSystem` | hadoop-aws JAR 下载失败 | 检查网络；手动下载放入 `~/.ivy2/` |
+| `Access Denied` 读取 S3 | AWS 凭证未配置 | `export AWS_PROFILE=nextcart-dev` |
+| `No such file or directory: silver/` | Silver 数据还未生成 | 先完成 Phase 7（Silver 管道） |
+| Windows: `Failed to locate the winutils binary` | 缺少 WinUtils | 安装 WinUtils，设置 `HADOOP_HOME` |
+
+---
+
+### 方案 B — AWS EMR（云端全量）
+
+> 如果账号出现 `SubscriptionRequiredException`，说明该账号类型不支持 EMR（如 Academy/Sandbox），请改用方案 A。
+
+#### B.1 部署 EMR 集群
+
+```bash
+cd infra/terraform/environments/dev
+terraform init -backend-config=backend.tfvars
 terraform apply -target=module.emr
 ```
 
-> EMR 集群启动约需 **8–12 分钟**，状态变为 `WAITING` 后才能提交作业。
+> 集群启动约需 **8–12 分钟**，状态变为 `WAITING` 后才能提交作业。
 
-验证集群状态：
 ```bash
-# 获取集群 ID
 CLUSTER_ID=$(terraform output -raw emr_cluster_id)
-echo "Cluster ID: ${CLUSTER_ID}"
 
-# 检查状态（等待 WAITING）
+# 检查状态（等待输出 WAITING）
 aws emr describe-cluster --cluster-id ${CLUSTER_ID} \
   --query 'Cluster.Status.State' --output text
 ```
 
-### 10.2 上传 Gold 脚本到 S3
+#### B.2 上传 Gold 脚本到 S3
 
 ```bash
 SCRIPTS_BUCKET=$(terraform output -raw glue_scripts_bucket)
@@ -1198,12 +1269,10 @@ aws s3 cp src/pipeline/gold/recommendation_features.py \
   s3://${SCRIPTS_BUCKET}/gold/recommendation_features.py
 ```
 
-### 10.3 运行 Task A Gold Job（Reorder Features）
+#### B.3 运行 Task A Gold Job（Reorder Features）
 
 ```bash
-CLUSTER_ID=$(terraform output -raw emr_cluster_id)
 LAKE_BUCKET=$(terraform output -raw lake_bucket)
-SCRIPTS_BUCKET=$(terraform output -raw glue_scripts_bucket)
 
 STEP_ID=$(aws emr add-steps \
   --cluster-id ${CLUSTER_ID} \
@@ -1222,7 +1291,7 @@ aws emr describe-step --cluster-id ${CLUSTER_ID} --step-id ${STEP_ID} \
   --query 'Step.Status.State' --output text
 ```
 
-### 10.4 运行 Task B Gold Job（Recommendation Features）
+#### B.4 运行 Task B Gold Job（Recommendation Features）
 
 ```bash
 STEP_ID=$(aws emr add-steps \
@@ -1240,37 +1309,31 @@ aws emr describe-step --cluster-id ${CLUSTER_ID} --step-id ${STEP_ID} \
   --query 'Step.Status.State' --output text
 ```
 
-### 10.5 验证 Gold 数据
-
-```bash
-# 检查 reorder_features Parquet 文件
-aws s3 ls s3://${LAKE_BUCKET}/gold/reorder_features/ --recursive | head -10
-
-# 检查 interaction_matrix
-aws s3 ls s3://${LAKE_BUCKET}/gold/interaction_matrix/ --recursive | head -5
-
-# 检查 product_vectors
-aws s3 ls s3://${LAKE_BUCKET}/gold/product_vectors/ --recursive | head -5
-```
-
-### Phase 10 已知问题排查
+#### B.5 EMR 排查
 
 | 错误 | 原因 | 解决方法 |
 |------|------|---------|
-| Step 状态一直 `PENDING` | 集群还在启动 | 等集群状态变为 `WAITING` 再提交 Step |
-| `FAILED: Application failed` | 脚本路径或参数错误 | `aws emr describe-step` 查看 `FailureDetails.Reason` |
-| S3 写入 permission denied | EMR EC2 角色缺少 lake bucket 权限 | IAM 模块已授权 `AmazonElasticMapReduceforEC2Role`，检查 bucket name 拼写 |
-| 集群自动终止（idle 1h） | `auto_termination_policy` 生效 | `terraform apply -target=module.emr` 重新创建集群 |
-
-### 查看 EMR Step 日志
+| `SubscriptionRequiredException` | 账号未订阅 EMR | 改用方案 A，或在控制台激活 EMR |
+| Step 状态一直 `PENDING` | 集群还在启动 | 等状态变为 `WAITING` 再提交 |
+| `FAILED: Application failed` | 脚本或参数错误 | `aws emr describe-step ... --query Step.Status.FailureDetails` |
+| 集群自动终止（idle 1h） | `auto_termination_policy` 生效 | `terraform apply -target=module.emr` 重新创建 |
 
 ```bash
+# 查看 Step 失败详情
 MSYS_NO_PATHCONV=1 aws emr describe-step \
   --cluster-id ${CLUSTER_ID} --step-id ${STEP_ID} \
   --query 'Step.Status.FailureDetails'
+```
 
-# 直接看 stdout 日志
-LOG_DIR=$(aws emr describe-cluster --cluster-id ${CLUSTER_ID} \
-  --query 'Cluster.LogUri' --output text)
-aws s3 ls ${LOG_DIR}steps/${STEP_ID}/
+---
+
+### 10.x 验证 Gold 数据（两种方案通用）
+
+```bash
+LAKE_BUCKET=$(cd infra/terraform/environments/dev && terraform output -raw lake_bucket)
+
+aws s3 ls s3://${LAKE_BUCKET}/gold/reorder_features/     --recursive | head -5
+aws s3 ls s3://${LAKE_BUCKET}/gold/interaction_matrix/   --recursive | head -5
+aws s3 ls s3://${LAKE_BUCKET}/gold/product_vectors/      --recursive | head -5
+aws s3 ls s3://${LAKE_BUCKET}/gold/recommendation_ground_truth/ --recursive | head -5
 ```
