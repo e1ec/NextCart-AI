@@ -5,7 +5,8 @@ to S3 bronze zone as Parquet via PyArrow.
 
 Environment variables:
   LAKE_BUCKET   S3 bucket name
-  API_BASE_URL  Base URL of Source 2 API (e.g. https://xxxx.execute-api.ap-southeast-2.amazonaws.com/dev)
+  API_BASE_URL  Base URL of Source 2 API
+                (e.g. https://xxxx.execute-api.ap-southeast-2.amazonaws.com/dev)
 """
 
 import io
@@ -29,20 +30,26 @@ RUN_DATE = datetime.now(timezone.utc).strftime("%Y/%m/%d")
 s3 = boto3.client("s3")
 
 SCHEMAS = {
-    "products": pa.schema([
-        pa.field("product_id",    pa.int32()),
-        pa.field("product_name",  pa.string()),
-        pa.field("aisle_id",      pa.int16()),
-        pa.field("department_id", pa.int16()),
-    ]),
-    "aisles": pa.schema([
-        pa.field("aisle_id", pa.int16()),
-        pa.field("aisle",    pa.string()),
-    ]),
-    "departments": pa.schema([
-        pa.field("department_id", pa.int16()),
-        pa.field("department",    pa.string()),
-    ]),
+    "products": pa.schema(
+        [
+            pa.field("product_id", pa.int32()),
+            pa.field("product_name", pa.string()),
+            pa.field("aisle_id", pa.int16()),
+            pa.field("department_id", pa.int16()),
+        ]
+    ),
+    "aisles": pa.schema(
+        [
+            pa.field("aisle_id", pa.int16()),
+            pa.field("aisle", pa.string()),
+        ]
+    ),
+    "departments": pa.schema(
+        [
+            pa.field("department_id", pa.int16()),
+            pa.field("department", pa.string()),
+        ]
+    ),
 }
 
 

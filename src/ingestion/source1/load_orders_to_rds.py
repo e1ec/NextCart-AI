@@ -51,7 +51,8 @@ def get_connection_params(env: str) -> dict:
 
 def create_tables(conn: psycopg2.extensions.connection) -> None:
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS orders (
                 order_id              INTEGER PRIMARY KEY,
                 user_id               INTEGER NOT NULL,
@@ -82,7 +83,8 @@ def create_tables(conn: psycopg2.extensions.connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_orders_eval_set ON orders (eval_set);
             CREATE INDEX IF NOT EXISTS idx_opp_product_id ON order_products_prior (product_id);
             CREATE INDEX IF NOT EXISTS idx_opt_product_id ON order_products_train (product_id);
-        """)
+        """
+        )
     conn.commit()
     log.info("Tables and indexes created (or already exist)")
 
@@ -121,7 +123,6 @@ def main() -> None:
     args = parser.parse_args()
 
     nrows = 1000 if args.sample else None
-    raw_dir = os.path.join(DATA_DIR, "raw" if not args.sample else "samples")
 
     params = get_connection_params(args.env)
     log.info("Connecting to %s:%s/%s", params["host"], params["port"], params["dbname"])
@@ -134,8 +135,15 @@ def main() -> None:
             conn,
             os.path.join(DATA_DIR, "raw", "orders.csv"),
             "orders",
-            ["order_id", "user_id", "eval_set", "order_number",
-             "order_dow", "order_hour_of_day", "days_since_prior_order"],
+            [
+                "order_id",
+                "user_id",
+                "eval_set",
+                "order_number",
+                "order_dow",
+                "order_hour_of_day",
+                "days_since_prior_order",
+            ],
             nrows=nrows,
         )
         load_csv(

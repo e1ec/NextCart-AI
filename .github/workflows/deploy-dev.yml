@@ -6,6 +6,7 @@ on:
 
 env:
   AWS_REGION: ap-southeast-2
+  TF_DIR: infra/terraform/environments/dev
 
 jobs:
   tf-apply-dev:
@@ -13,28 +14,49 @@ jobs:
     environment: dev
     steps:
       - uses: actions/checkout@v4
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.5"
-      - run: |
-          cd infra/terraform/environments/dev
-          terraform init
-          terraform apply -auto-approve
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=${{ env.TF_DIR }} init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=nextcart-terraform-locks" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform apply
+        run: terraform -chdir=${{ env.TF_DIR }} apply -auto-approve
+
+      - name: Sync Glue scripts to S3
+        run: |
+          GLUE_BUCKET=$(terraform -chdir=${{ env.TF_DIR }} output -raw glue_scripts_bucket)
+          aws s3 sync src/pipeline/ s3://${GLUE_BUCKET}/
 
   smoke-test:
     needs: tf-apply-dev
     runs-on: ubuntu-latest
+    environment: dev
     steps:
       - uses: actions/checkout@v4
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - run: pip install -r requirements-dev.txt
       - run: pytest tests/integration/ -v -m integration --timeout=120

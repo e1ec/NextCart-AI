@@ -14,12 +14,14 @@ def _get_db_url() -> str:
     if env == "local":
         host = os.getenv("LOCAL_DB_HOST", "localhost")
         port = os.getenv("LOCAL_DB_PORT", "5434")
-        return f"postgresql://nextcart_admin:{os.getenv('LOCAL_DB_PASSWORD', 'localpassword')}@{host}:{port}/products"
+        password = os.getenv("LOCAL_DB_PASSWORD", "localpassword")
+        return f"postgresql://nextcart_admin:{password}@{host}:{port}/products"
 
     secret_arn = os.environ["DB_SECRET_ARN"]
     secret = json.loads(
-        boto3.client("secretsmanager", region_name=os.environ["AWS_REGION_NAME"])
-        .get_secret_value(SecretId=secret_arn)["SecretString"]
+        boto3.client("secretsmanager", region_name=os.environ["AWS_REGION_NAME"]).get_secret_value(
+            SecretId=secret_arn
+        )["SecretString"]
     )
     return (
         f"postgresql+psycopg2://{secret['username']}:{secret['password']}"

@@ -48,7 +48,8 @@ def get_connection_params(env: str) -> dict:
 
 def create_tables(conn: psycopg2.extensions.connection) -> None:
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS departments (
                 department_id   SMALLINT PRIMARY KEY,
                 department      VARCHAR(100) NOT NULL
@@ -68,7 +69,8 @@ def create_tables(conn: psycopg2.extensions.connection) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_products_aisle ON products (aisle_id);
             CREATE INDEX IF NOT EXISTS idx_products_dept ON products (department_id);
-        """)
+        """
+        )
     conn.commit()
     log.info("Tables created (or already exist)")
 
@@ -77,8 +79,8 @@ def load_all(conn: psycopg2.extensions.connection) -> None:
     # Load in FK order: departments → aisles → products
     for filename, table, cols in [
         ("departments.csv", "departments", ["department_id", "department"]),
-        ("aisles.csv",      "aisles",      ["aisle_id", "aisle"]),
-        ("products.csv",    "products",    ["product_id", "product_name", "aisle_id", "department_id"]),
+        ("aisles.csv", "aisles", ["aisle_id", "aisle"]),
+        ("products.csv", "products", ["product_id", "product_name", "aisle_id", "department_id"]),
     ]:
         df = pd.read_csv(os.path.join(DATA_DIR, filename))
         rows = [tuple(r) for r in df[cols].itertuples(index=False)]
