@@ -121,7 +121,6 @@ def main() -> None:
     args = parser.parse_args()
 
     nrows = 1000 if args.sample else None
-    raw_dir = os.path.join(DATA_DIR, "raw" if not args.sample else "samples")
 
     params = get_connection_params(args.env)
     log.info("Connecting to %s:%s/%s", params["host"], params["port"], params["dbname"])

@@ -7,12 +7,9 @@ Glue job arguments:
 """
 
 import sys
-from datetime import datetime
 
 from awsglue.context import GlueContext
-from awsglue.dynamicframe import DynamicFrame
 from awsglue.job import Job
-from awsglue.transforms import DropNullFields
 from awsglue.utils import getResolvedOptions
 from pyspark.context import SparkContext
 from pyspark.sql import functions as F
@@ -95,7 +92,8 @@ for table, transform_fn, partition_cols in [
 
     # Write quarantine records before filtering (rows with null mandatory keys)
     quarantine_df = bronze_df.filter(
-        F.col("order_id").isNull() | F.col("user_id" if table == "orders" else "product_id").isNull()
+        F.col("order_id").isNull()
+        | F.col("user_id" if table == "orders" else "product_id").isNull()
     )
     if quarantine_df.count() > 0:
         (
