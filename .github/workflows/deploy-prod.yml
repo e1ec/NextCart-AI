@@ -6,28 +6,39 @@ on:
 
 env:
   AWS_REGION: ap-southeast-2
+  TF_DIR: infra/terraform/environments/prod
 
 jobs:
   tf-plan-prod:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.5"
-      - run: |
-          cd infra/terraform/environments/prod
-          terraform init
-          terraform plan -out=tfplan
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=${{ env.TF_DIR }} init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=nextcart-terraform-locks" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform plan
+        run: terraform -chdir=${{ env.TF_DIR }} plan -out=tfplan
+
       - uses: actions/upload-artifact@v4
         with:
           name: tfplan-prod
-          path: infra/terraform/environments/prod/tfplan
+          path: ${{ env.TF_DIR }}/tfplan
 
   manual-approval:
     needs: tf-plan-prod
@@ -39,21 +50,37 @@ jobs:
   tf-apply-prod:
     needs: manual-approval
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - uses: actions/checkout@v4
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: tfplan-prod
-          path: infra/terraform/environments/prod/
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.5"
-      - run: |
-          cd infra/terraform/environments/prod
-          terraform init
-          terraform apply tfplan
+
+      - name: Terraform init
+        run: |
+          terraform -chdir=${{ env.TF_DIR }} init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=nextcart-terraform-locks" \
+            -backend-config="encrypt=true"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-prod
+          path: ${{ env.TF_DIR }}/
+
+      - name: Terraform apply
+        run: terraform -chdir=${{ env.TF_DIR }} apply tfplan
+
+      - name: Sync Glue scripts to S3
+        run: |
+          GLUE_BUCKET=$(terraform -chdir=${{ env.TF_DIR }} output -raw glue_scripts_bucket)
+          aws s3 sync src/pipeline/ s3://${GLUE_BUCKET}/
