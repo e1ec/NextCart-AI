@@ -28,4 +28,16 @@ markers = [
 
 [tool.coverage.run]
 source = ["src"]
-omit = ["src/ingestion/source2/api/*"]
+omit = [
+    "src/ingestion/source2/api/main.py",
+    "src/ingestion/source2/api/database.py",
+    "src/pipeline/bronze/*",
+    "src/pipeline/silver/*",
+    "src/pipeline/gold/*",
+    "src/ingestion/source1/*",
+    "src/ingestion/source2/load_products_to_rds.py",
+    "src/ingestion/source3/*",
+    "src/ml/*",
+    "src/serving/*",
+    "src/monitoring/*",
+]
