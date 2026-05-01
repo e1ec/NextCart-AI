@@ -1,0 +1,3 @@
+# SageMaker container requirements (installed into the training container via source_dir)
+# The XGBoost container already has xgboost; SKLearn container needs lightgbm added.
+lightgbm==4.3.0

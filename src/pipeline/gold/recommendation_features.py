@@ -41,6 +41,11 @@ if args.local:
             "spark.hadoop.fs.s3a.aws.credentials.provider",
             "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
         )
+        .config("spark.driver.memory", "4g")
+        .config("spark.sql.autoBroadcastJoinThreshold", "-1")
+        .config("spark.hadoop.fs.s3a.fast.upload.buffer", "array")
+        .config("spark.sql.shuffle.partitions", "8")
+        .config("spark.default.parallelism", "4")
     )
 spark = builder.getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
@@ -76,7 +81,7 @@ n_users = interaction_matrix.select("user_id").distinct().count()
 n_products = interaction_matrix.select("product_id").distinct().count()
 print(f"Interaction matrix: {count:,} interactions, {n_users:,} users, {n_products:,} products")
 
-interaction_matrix.write.mode("overwrite").parquet(f"{GOLD}/interaction_matrix/")
+interaction_matrix.repartition(4).write.mode("overwrite").parquet(f"{GOLD}/interaction_matrix/")
 print(f"Written to {GOLD}/interaction_matrix/")
 
 # ── Ground Truth: Last Order Per User (for offline evaluation) ───────────────
@@ -92,7 +97,7 @@ ground_truth = (
 gt_count = ground_truth.count()
 print(f"Ground truth (train set): {gt_count:,} user-product pairs")
 
-ground_truth.write.mode("overwrite").parquet(f"{GOLD}/recommendation_ground_truth/")
+ground_truth.repartition(4).write.mode("overwrite").parquet(f"{GOLD}/recommendation_ground_truth/")
 print(f"Written to {GOLD}/recommendation_ground_truth/")
 
 # ── Product Content Vectors (TF-IDF on text features) ───────────────────────
@@ -126,7 +131,7 @@ product_vectors = idf_model.transform(featurized).select(
 vec_count = product_vectors.count()
 print(f"Product vectors: {vec_count:,} products (512-dim TF-IDF)")
 
-product_vectors.write.mode("overwrite").parquet(f"{GOLD}/product_vectors/")
+product_vectors.repartition(2).write.mode("overwrite").parquet(f"{GOLD}/product_vectors/")
 print(f"Written to {GOLD}/product_vectors/")
 
 spark.stop()
