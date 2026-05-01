@@ -1,5 +1,5 @@
 # NextCart — Deployment Operations Manual
-**Covers: Week 1–3 (Source 1 + Source 2, Silver Pipeline, EMR + Gold Features)**
+**Covers: Week 1–4 (Source 1 + Source 2, Silver Pipeline, Gold Features, ML Training)**
 
 ---
 
@@ -18,6 +18,7 @@
 | Phase 8 — 验证 | **本地终端** | 你手动运行 |
 | Phase 9 — GitHub & CI/CD | **本地终端** + **GitHub** | 你初始化仓库，Actions 自动运行 |
 | Phase 10 — EMR + Gold Features | **本地终端**发指令 | AWS EMR 在云上跑 PySpark |
+| Phase 11 — ML Training | **本地终端**（方案 A）或 **AWS SageMaker**（方案 B） | Python 本地 / SageMaker 托管容器 |
 | CI/CD（后续） | **自动触发**（push 代码） | GitHub Actions → AWS |
 
 > **终端推荐**：Windows 用 **Git Bash** 或 **WSL2**（手册命令全是 bash 语法）。PowerShell 也可以但部分语法需要调整。
@@ -1166,12 +1167,13 @@ aws rds describe-db-instances \
 
 两种执行方式，选择其一：
 
-| | 方案 A — 本地 PySpark | 方案 B — AWS EMR |
+| | 方案 A — 本地 PySpark | 方案 C — AWS EMR |
 |---|---|---|
-| 适用场景 | 账号不支持 EMR / 快速调试 | 生产级全量数据 |
-| 数据读写 | 直接读写 S3（s3a://） | EMR Step 读写 S3（s3://） |
+| 适用场景 | 快速调试 / 无 AWS 算力  | 有 EMR 订阅的账号 |
+| 数据读写 | S3（s3a://，需 hadoop-aws JAR）  | S3（s3://，EMRFS） |
 | 前置条件 | Java 11 + PySpark | EMR 订阅 + terraform apply |
-| 运行时间（全量） | 30–60 min（本机单核） | 10–20 min（云端 m5.xlarge）|
+| 运行时间（全量） | 30–60 min（本机单核）  | 10–20 min（m5.xlarge） |
+| 费用 | 0  | ~$0.19/h（仅运行期间） |
 
 ---
 
@@ -1337,3 +1339,330 @@ aws s3 ls s3://${LAKE_BUCKET}/gold/interaction_matrix/   --recursive | head -5
 aws s3 ls s3://${LAKE_BUCKET}/gold/product_vectors/      --recursive | head -5
 aws s3 ls s3://${LAKE_BUCKET}/gold/recommendation_ground_truth/ --recursive | head -5
 ```
+
+---
+
+## Phase 11 — ML Training (Task A — Reorder Prediction)
+
+两种执行方式，选择其一：
+
+| | 方案 A — 本地 Python | 方案 B — SageMaker Training Job |
+|---|---|---|
+| 适用场景 | 快速调试 / 验证 | 生产训练、可复现、带版本管理 |
+| 运行环境 | 本机（读写 S3） | AWS SageMaker 托管容器 |
+| 模型版本管理 | 手动（S3 文件） | SageMaker Model Registry |
+| 前置条件 | `pip install` | `terraform apply -target=module.sagemaker` |
+| 费用 | 0（本机算力） | `ml.m5.large` ~$0.115/h（仅训练时计费） |
+
+**前提（两种方案共用）**：Phase 10 完成，`s3://.../gold/reorder_features/` 有数据。
+
+---
+
+### 方案 A — 本地 Python（快速验证）
+
+#### 11.1 安装 ML 依赖
+
+```bash
+# 确认虚拟环境已激活
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
+# 安装所有依赖（s3fs 在 requirements.txt 里，已包含）
+pip install -r requirements.txt
+
+# 验证关键包
+python -c "import xgboost, lightgbm, s3fs, pyarrow; print('OK')"
+```
+
+#### 11.2 准备训练/测试数据集
+
+将 Gold features 按用户 80/20 拆分，写入 `s3://.../ml/reorder_dataset/`：
+
+```bash
+LAKE_BUCKET=$(terraform -chdir="infra/terraform/environments/dev" output -raw lake_bucket)
+
+python src/ml/reorder/prepare_dataset.py --lake_bucket ${LAKE_BUCKET}
+```
+
+**预期输出**：
+```
+Reading gold features from s3://nextcart-dev-lake/gold/reorder_features/ ...
+Loaded 1,384,617 rows, 19 columns
+Label distribution:
+1    828824
+0    555793
+Train: 1,107,784 rows (131,209 users)
+Test:    276,833 rows (32,803 users)
+Train label rate: 0.599
+Test  label rate: 0.600
+Written to s3://nextcart-dev-lake/ml/reorder_dataset/train.parquet
+Written to s3://nextcart-dev-lake/ml/reorder_dataset/test.parquet
+```
+
+验证文件已写入：
+```bash
+aws s3 ls s3://${LAKE_BUCKET}/ml/reorder_dataset/
+# 预期: train.parquet  test.parquet
+```
+
+#### 11.3 训练 XGBoost 基线模型（Phase 1）
+
+```bash
+python src/ml/reorder/train_xgboost.py --lake_bucket ${LAKE_BUCKET}
+```
+
+**预期输出**（训练过程及最终指标）：
+```
+Loading train/test splits ...
+Train: (1107784, 17), Test: (276833, 17)
+Training XGBoost ...
+[0]  validation_0-logloss: 0.67420
+[50] validation_0-logloss: 0.54312
+...
+==================================================
+  XGBoost Baseline — Evaluation Results
+==================================================
+  F1-score       : 0.39xx
+  Precision      : 0.xx
+  Recall         : 0.xx
+  AUC-ROC        : 0.xx
+  Avg Precision  : 0.xx
+  Test rows      : 276,833
+  Positive rate  : 0.600
+==================================================
+```
+
+模型文件写入：
+```
+s3://nextcart-dev-lake/ml/models/xgboost/model.ubj
+s3://nextcart-dev-lake/ml/models/xgboost/metrics.json
+```
+
+#### 11.4 训练 LightGBM 主力模型（Phase 2）
+
+```bash
+python src/ml/reorder/train_lightgbm.py --lake_bucket ${LAKE_BUCKET}
+```
+
+参数说明（可通过 CLI 覆盖）：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--num_leaves` | 63 | 叶子节点数（越大模型越复杂） |
+| `--n_estimators` | 500 | 最大树的棵数（early stopping 会提前停止） |
+| `--learning_rate` | 0.05 | 学习率 |
+| `--threshold` | 0.5 | 分类阈值（可根据 PR 曲线调整） |
+
+**预期输出**：
+```
+Training LightGBM ...
+[LightGBM] [Info] Auto-choosing row-wise multi-threading ...
+Training until validation scores don't improve for 30 rounds.
+[50]  valid_0's binary_logloss: 0.52xxx
+[100] valid_0's binary_logloss: 0.50xxx
+...
+Early stopping, best iteration is: [xxx]
+==================================================
+  LightGBM Primary — Evaluation Results
+==================================================
+  F1-score       : 0.40xx   ← 目标 ≥ 0.38
+  AUC-ROC        : 0.xx
+...
+```
+
+模型文件写入：
+```
+s3://nextcart-dev-lake/ml/models/lightgbm/model.txt
+s3://nextcart-dev-lake/ml/models/lightgbm/metrics.json
+```
+
+#### 11.5 验证模型产物
+
+```bash
+# 列出所有模型文件
+aws s3 ls s3://${LAKE_BUCKET}/ml/ --recursive
+
+# 查看 LightGBM 指标
+aws s3 cp s3://${LAKE_BUCKET}/ml/models/lightgbm/metrics.json - | python -m json.tool
+
+# 查看 XGBoost 指标
+aws s3 cp s3://${LAKE_BUCKET}/ml/models/xgboost/metrics.json - | python -m json.tool
+```
+
+**预期指标 JSON**：
+```json
+{
+  "model": "LightGBM Primary",
+  "f1": 0.40xx,
+  "precision": 0.xx,
+  "recall": 0.xx,
+  "auc_roc": 0.xx,
+  "avg_precision": 0.xx,
+  "n_test": 276833,
+  "n_positive": 165899
+}
+```
+
+#### 11.6 A/B 对比（XGBoost vs LightGBM）
+
+将两份 `metrics.json` 记录到 PROJECT_PLAN.md 的 **Results Log** 表格：
+
+```bash
+XGB_F1=$(aws s3 cp s3://${LAKE_BUCKET}/ml/models/xgboost/metrics.json - \
+  | python -c "import json,sys; d=json.load(sys.stdin); print(f\"XGBoost F1: {d['f1']:.4f}  AUC: {d['auc_roc']:.4f}\")")
+
+LGB_F1=$(aws s3 cp s3://${LAKE_BUCKET}/ml/models/lightgbm/metrics.json - \
+  | python -c "import json,sys; d=json.load(sys.stdin); print(f\"LightGBM F1: {d['f1']:.4f}  AUC: {d['auc_roc']:.4f}\")")
+
+echo "${XGB_F1}"
+echo "${LGB_F1}"
+```
+
+#### 11.7 排查
+
+| 症状 | 原因 | 解决方法 |
+|------|------|---------|
+| `ModuleNotFoundError: No module named 's3fs'` | 未安装 s3fs | `pip install s3fs==2024.6.0` |
+| `NoSuchBucket` / `NoSuchKey` | Gold 数据还未生成 | 先完成 Phase 10 |
+| `AccessDenied` 读取 S3 | AWS 凭证未激活 | `export AWS_PROFILE=nextcart-dev` |
+| `ModuleNotFoundError: No module named 'src'` | 从错误目录运行 | 在项目根目录 `d:/study/JR proj/NextCart/` 运行 |
+| LightGBM F1 < 0.38 | 数据质量或特征问题 | 检查 Gold 数据是否有大量 fillna(0)；考虑调高 `--num_leaves` 到 127，降低 `--learning_rate` 到 0.03 |
+| OOM（内存不足） | 完整数据集 1.38M 行较大 | 增加系统可用内存；或用 `--n_estimators 200` 先验证流程 |
+
+---
+
+### 方案 B — SageMaker Training Job（托管训练 + Model Registry）
+
+> **适用场景**：需要可复现的训练环境、模型版本管理、或未来对接 SageMaker Endpoint 推理。
+> **前提**：Phase 10 完成；SageMaker Terraform 模块已 apply；已安装 `sagemaker` SDK。
+
+#### B.1 部署 SageMaker 基础设施
+
+```bash
+cd infra/terraform/environments/dev
+terraform init -backend-config=backend.tfvars
+
+# 只部署 SageMaker 模块（IAM role + Model Registry）
+terraform apply -target=module.sagemaker
+
+# 保存关键输出
+SM_ROLE_ARN=$(terraform output -raw sagemaker_role_arn)
+SM_MODEL_GROUP=$(terraform output -raw sagemaker_model_group)
+LAKE_BUCKET=$(terraform output -raw lake_bucket)
+echo "SageMaker Role: ${SM_ROLE_ARN}"
+echo "Model Group:    ${SM_MODEL_GROUP}"
+cd -
+```
+
+**创建的资源：**
+- IAM role `nextcart-dev-sagemaker-role`（AmazonSageMakerFullAccess + S3 lake 写权限）
+- Model Package Group `nextcart-dev-reorder`（Task A 注册表）
+- Model Package Group `nextcart-dev-recommendation`（Task B 预留）
+
+#### B.2 安装 SageMaker SDK
+
+```bash
+pip install sagemaker==2.220.0
+```
+
+#### B.3 准备训练数据集（若方案 A 已完成可跳过）
+
+```bash
+python src/ml/reorder/prepare_dataset.py --lake_bucket ${LAKE_BUCKET}
+
+aws s3 ls s3://${LAKE_BUCKET}/ml/reorder_dataset/
+# 预期: train.parquet  test.parquet
+```
+
+#### B.4 提交 SageMaker 训练作业
+
+launcher 依次提交 XGBoost 和 LightGBM 两个训练作业，等待完成后自动注册到 Model Registry：
+
+```bash
+# 等待完成再注册（约 15–25 分钟合计）
+python src/ml/reorder/launch_sagemaker.py \
+  --lake_bucket     ${LAKE_BUCKET} \
+  --role_arn        ${SM_ROLE_ARN} \
+  --model_package_group ${SM_MODEL_GROUP}
+
+# 或仅提交不等待（CI/CD 场景）
+python src/ml/reorder/launch_sagemaker.py \
+  --lake_bucket ${LAKE_BUCKET} \
+  --role_arn    ${SM_ROLE_ARN} \
+  --no_wait
+```
+
+**两个作业说明：**
+
+| 作业前缀 | Estimator | 容器 | 实例 | 估计时间 |
+|---------|-----------|------|------|---------|
+| `nextcart-xgboost-*` | `XGBoost` | XGBoost 2.0-1（AWS 内置） | ml.m5.large | ~5–8 min |
+| `nextcart-lightgbm-*` | `SKLearn` | sklearn 1.2-1 + requirements.txt 安装 lightgbm | ml.m5.large | ~8–12 min |
+
+> `src/ml/reorder/requirements.txt` 里的 `lightgbm==4.3.0` 会被 SKLearn 容器自动安装。
+
+**监控训练进度：**
+
+```bash
+# 列出最近的训练作业
+aws sagemaker list-training-jobs \
+  --name-contains nextcart \
+  --sort-by CreationTime --sort-order Descending \
+  --query 'TrainingJobSummaries[].{Name:TrainingJobName,Status:TrainingJobStatus}' \
+  --max-results 6
+
+# 查看单个作业状态
+aws sagemaker describe-training-job \
+  --training-job-name <job-name> \
+  --query '{Status:TrainingJobStatus,Secondary:SecondaryStatus,Failure:FailureReason}'
+
+# 实时日志
+MSYS_NO_PATHCONV=1 aws logs tail \
+  /aws/sagemaker/TrainingJobs \
+  --log-stream-name-prefix <job-name> \
+  --follow --format short
+```
+
+#### B.5 查看 A/B 对比指标
+
+作业完成后 launcher 自动打印对比。也可手动查询：
+
+```bash
+echo "=== XGBoost ===" && \
+  aws s3 cp s3://${LAKE_BUCKET}/ml/models/xgboost-sm/metrics.json - | python -m json.tool
+
+echo "=== LightGBM ===" && \
+  aws s3 cp s3://${LAKE_BUCKET}/ml/models/lightgbm-sm/metrics.json - | python -m json.tool
+```
+
+#### B.6 Model Registry — 批准 Champion 模型
+
+```bash
+# 列出已注册的版本
+aws sagemaker list-model-packages \
+  --model-package-group-name ${SM_MODEL_GROUP} \
+  --query 'ModelPackageSummaryList[].{Version:ModelPackageVersion,Status:ModelApprovalStatus,Desc:ModelPackageDescription}'
+
+# 批准 LightGBM 为 champion（替换为实际 ARN）
+PACKAGE_ARN=$(aws sagemaker list-model-packages \
+  --model-package-group-name ${SM_MODEL_GROUP} \
+  --query 'ModelPackageSummaryList[?contains(ModelPackageDescription,`LightGBM`)].ModelPackageArn' \
+  --output text | head -1)
+
+aws sagemaker update-model-package \
+  --model-package-arn ${PACKAGE_ARN} \
+  --model-approval-status Approved
+```
+
+或在控制台：**SageMaker → Model Registry → nextcart-dev-reorder** → 选择版本 → Update status → Approved
+
+#### B.7 排查
+
+| 症状 | 原因 | 解决方法 |
+|------|------|---------|
+| `ClientError: AccessDenied` (S3) | SageMaker role 缺少 lake bucket 权限 | 确认 `module.sagemaker` 的 `lake_bucket` 变量正确，重 apply |
+| 作业状态 `Failed: ResourceConfig` | 实例类型不可用 | 换 `--instance_type ml.t3.medium` 或 `ml.m5.xlarge` |
+| `ModuleNotFoundError: No module named sagemaker` | SDK 未安装 | `pip install sagemaker==2.220.0` |
+| `ModuleNotFoundError: No module named evaluate` | source_dir 路径错误 | 确认在项目**根目录**运行，脚本中 `source_dir='src/ml/reorder'` |
+| LightGBM 作业失败：`No module named lightgbm` | requirements.txt 未打包 | 确认 `src/ml/reorder/requirements.txt` 存在且含 `lightgbm==4.3.0` |
+| `ValidationException: ModelPackageGroup not found` | Model group 未创建 | `terraform apply -target=module.sagemaker` |
+| 费用超预期 | ml.m5.large 按秒计费 (~$0.115/h) | 加 `--instance_type ml.t3.medium` 降低费用（训练更慢） |

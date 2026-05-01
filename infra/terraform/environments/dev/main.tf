@@ -115,6 +115,15 @@ module "glue" {
   sg_glue_id          = module.vpc.sg_glue_id
 }
 
+# ── SageMaker (Training Jobs + Model Registry) ─────────────
+module "sagemaker" {
+  source         = "../../modules/sagemaker"
+  project        = local.project
+  environment    = local.environment
+  lake_bucket    = module.s3.bucket_name
+  scripts_bucket = module.glue.glue_scripts_bucket
+}
+
 # ── EMR (Gold feature engineering + ML training) ─────────────
 module "emr" {
   source               = "../../modules/emr"
@@ -139,3 +148,5 @@ output "orders_db_secret_arn"   { value = module.rds_orders.secret_arn }
 output "products_db_endpoint"   { value = module.rds_products.endpoint }
 output "products_db_secret_arn" { value = module.rds_products.secret_arn }
 output "emr_cluster_id"         { value = module.emr.cluster_id }
+output "sagemaker_role_arn"     { value = module.sagemaker.role_arn }
+output "sagemaker_model_group"  { value = module.sagemaker.reorder_model_package_group }

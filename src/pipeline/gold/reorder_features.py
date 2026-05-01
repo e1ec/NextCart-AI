@@ -14,7 +14,7 @@ Output:
 import argparse
 
 from pyspark.ml.feature import StringIndexer
-from pyspark.sql import SparkSession, Window
+from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 
 parser = argparse.ArgumentParser()
@@ -41,6 +41,9 @@ if args.local:
             "spark.hadoop.fs.s3a.aws.credentials.provider",
             "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
         )
+        .config("spark.driver.memory", "4g")
+        .config("spark.sql.autoBroadcastJoinThreshold", "-1")
+        .config("spark.hadoop.fs.s3a.fast.upload.buffer", "array")
     )
 spark = builder.getOrCreate()
 spark.sparkContext.setLogLevel("WARN")
@@ -59,8 +62,6 @@ user_orders = orders.filter(F.col("eval_set") == "prior").select(
     "order_hour_of_day", "days_since_prior_order",
 )
 
-w_user = Window.partitionBy("user_id")
-
 user_stats = (
     prior.join(user_orders, "order_id")
     .groupBy("user_id")
@@ -68,15 +69,11 @@ user_stats = (
         F.count("product_id").alias("user_total_products"),
         F.countDistinct("order_id").alias("user_total_orders"),
         F.mean("days_since_prior_order").alias("user_avg_days_between_orders"),
-        F.mean(
-            F.size(F.collect_list("product_id").over(w_user))
-        ).alias("_unused"),
     )
     .withColumn(
         "user_avg_order_size",
         F.col("user_total_products") / F.col("user_total_orders"),
     )
-    .drop("_unused")
 )
 
 # ── User × Product features ──────────────────────────────────────────────────
@@ -143,13 +140,36 @@ dept_indexer = StringIndexer(
 product_meta = aisle_indexer.fit(product_meta).transform(product_meta)
 product_meta = dept_indexer.fit(product_meta).transform(product_meta)
 
-# ── Label: from order_products_train ────────────────────────────────────────
+# ── Label construction ───────────────────────────────────────────────────────
+# Correct framing: for each user, all products bought in PRIOR orders are
+# candidates. Label = 1 if the product also appears in the TRAIN order, 0 if not.
+# Using order_products_train.reordered directly would cause leakage because
+# that column = (product appeared in prior), which is identical to up_order_count > 0.
 
-labels = train.select("user_id", "product_id", "reordered").join(
-    orders.filter(F.col("eval_set") == "train").select(
-        "order_id", "user_id", "order_dow", "order_hour_of_day"
-    ),
-    "user_id",
+train_orders = orders.filter(F.col("eval_set") == "train").select(
+    "order_id", "user_id", "order_dow", "order_hour_of_day"
+)
+
+# Products actually purchased in the train (last) order
+train_purchased = (
+    train.join(train_orders.select("order_id", "user_id"), "order_id")
+    .select("user_id", "product_id")
+    .withColumn("label", F.lit(1))
+)
+
+# All user-product pairs from prior orders = prediction candidates
+candidates = (
+    prior.join(user_orders.select("order_id", "user_id"), "order_id")
+    .select("user_id", "product_id")
+    .distinct()
+)
+
+# Join candidates with train order context, then label 1/0
+labels = (
+    candidates
+    .join(train_orders.select("user_id", "order_dow", "order_hour_of_day"), "user_id")
+    .join(train_purchased, ["user_id", "product_id"], how="left")
+    .fillna({"label": 0})
 )
 
 # ── Final join ───────────────────────────────────────────────────────────────
@@ -197,7 +217,7 @@ feature_df = (
         "order_dow",
         "order_hour_of_day",
         # Label
-        F.col("reordered").alias("label"),
+        "label",
     )
     .fillna(0)
     .withColumn("_gold_ts", F.current_timestamp())

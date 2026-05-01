@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(black src/ tests/)",
+      "Bash(python -m black src/ tests/)",
+      "Bash(py -m black src/ tests/)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
