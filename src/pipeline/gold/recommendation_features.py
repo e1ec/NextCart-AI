@@ -17,6 +17,7 @@ from pyspark.ml.feature import HashingTF, IDF, Tokenizer
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import FloatType
+from pyspark.sql.window import Window
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--lake_bucket", required=True)
@@ -61,18 +62,74 @@ products = spark.read.parquet(f"{SILVER}/products/")
 # Implicit feedback: purchase count as interaction strength
 # Uses prior orders only; train orders are the evaluation ground truth
 
-user_ids = orders.filter(F.col("eval_set") == "prior").select("order_id", "user_id")
+user_orders_rec = (
+    orders.filter(F.col("eval_set") == "prior")
+    .select("order_id", "user_id", "order_number", "days_since_prior_order")
+)
+
+# prior enriched with user_id and order_number (single join, no duplicate columns)
+prior_with_meta = prior.join(
+    user_orders_rec.select("order_id", "user_id", "order_number"), "order_id"
+)
 
 interaction_matrix = (
-    prior.join(user_ids, "order_id")
+    prior_with_meta
     .groupBy("user_id", "product_id")
     .agg(
         F.count("order_id").cast(FloatType()).alias("purchase_count"),
         F.sum("reordered").cast(FloatType()).alias("reorder_count"),
         F.mean("add_to_cart_order").cast(FloatType()).alias("avg_cart_position"),
+        F.max("order_number").alias("_last_order_number"),
     )
-    # Implicit rating: log-scaled purchase count (standard for ALS implicit)
     .withColumn("implicit_score", F.log1p(F.col("purchase_count")))
+)
+
+# ── Temporal features ─────────────────────────────────────────────────────────
+
+# Cumulative days from each prior order to the last prior order per user.
+# days_since_prior_order on order N = days between order N-1 and N, so days
+# from order K to the end = sum(days_since_prior_order for orders K+1 .. N).
+_w_future = (
+    Window.partitionBy("user_id")
+    .orderBy("order_number")
+    .rowsBetween(1, Window.unboundedFollowing)
+)
+_order_timeline = user_orders_rec.withColumn(
+    "days_to_last_prior_order",
+    F.coalesce(F.sum("days_since_prior_order").over(_w_future), F.lit(0.0)),
+)
+
+days_since_last = (
+    interaction_matrix.select("user_id", "product_id", "_last_order_number")
+    .join(
+        _order_timeline.select("user_id", "order_number", "days_to_last_prior_order"),
+        on=["user_id"],
+    )
+    .filter(F.col("order_number") == F.col("_last_order_number"))
+    .select(
+        "user_id",
+        "product_id",
+        F.col("days_to_last_prior_order").alias("days_since_last_purchase"),
+    )
+)
+
+_user_max_order = user_orders_rec.groupBy("user_id").agg(
+    F.max("order_number").alias("max_order_number")
+)
+appeared_in_last3 = (
+    prior_with_meta
+    .join(_user_max_order, "user_id")
+    .filter(F.col("order_number") >= F.col("max_order_number") - 2)
+    .groupBy("user_id", "product_id")
+    .agg(F.count("order_id").cast("int").alias("appeared_in_last_3_orders"))
+)
+
+interaction_matrix = (
+    interaction_matrix
+    .join(days_since_last, ["user_id", "product_id"], how="left")
+    .join(appeared_in_last3, ["user_id", "product_id"], how="left")
+    .drop("_last_order_number")
+    .fillna({"days_since_last_purchase": 0.0, "appeared_in_last_3_orders": 0})
     .withColumn("_gold_ts", F.current_timestamp())
 )
 

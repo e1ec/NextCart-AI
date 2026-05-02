@@ -2,7 +2,8 @@
         tf-init-dev tf-plan-dev tf-apply-dev \
         load-source1 load-source2 api-up simulate-stream \
         run-bronze run-silver run-gold run-gold-local \
-        prepare-dataset train-xgboost train-lightgbm train-als
+        prepare-dataset train-xgboost train-lightgbm \
+        train-als train-content train-hybrid
 
 # ── Environment ──────────────────────────────────────────────
 install:
@@ -83,4 +84,14 @@ train-lightgbm:
 	PYTHONPATH=. python src/ml/reorder/train_lightgbm.py --lake_bucket nextcart-dev-lake
 
 train-als:
-	python src/ml/recommendation/train_als.py --env local
+	python src/ml/recommendation/train_als.py \
+	  --lake_bucket nextcart-dev-lake --local \
+	  --rank 20 --max_iter 15 --als_alpha 40 --rating_col reorder_count --sample_frac 0.3
+
+train-content:
+	PYTHONPATH=. python src/ml/recommendation/content_based.py \
+	  --lake_bucket nextcart-dev-lake
+
+train-hybrid:
+	PYTHONPATH=. python src/ml/recommendation/hybrid.py \
+	  --lake_bucket nextcart-dev-lake

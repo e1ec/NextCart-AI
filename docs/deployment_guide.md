@@ -1,5 +1,5 @@
 # NextCart — Deployment Operations Manual
-**Covers: Week 1–4 (Source 1 + Source 2, Silver Pipeline, Gold Features, ML Training)**
+**Covers: Week 1–5 (Source 1 + Source 2, Silver Pipeline, Gold Features, Task A ML Training, Task B Recommendation)**
 
 ---
 
@@ -18,7 +18,8 @@
 | Phase 8 — 验证 | **本地终端** | 你手动运行 |
 | Phase 9 — GitHub & CI/CD | **本地终端** + **GitHub** | 你初始化仓库，Actions 自动运行 |
 | Phase 10 — EMR + Gold Features | **本地终端**发指令 | AWS EMR 在云上跑 PySpark |
-| Phase 11 — ML Training | **本地终端**（方案 A）或 **AWS SageMaker**（方案 B） | Python 本地 / SageMaker 托管容器 |
+| Phase 11 — ML Training (Task A) | **本地终端**（方案 A）或 **AWS SageMaker**（方案 B） | Python 本地 / SageMaker 托管容器 |
+| Phase 12 — Recommendation (Task B) | **本地终端**（ALS via PySpark）或 **AWS EMR/SageMaker** | PySpark ALS + Content-Based + Hybrid |
 | CI/CD（后续） | **自动触发**（push 代码） | GitHub Actions → AWS |
 
 > **终端推荐**：Windows 用 **Git Bash** 或 **WSL2**（手册命令全是 bash 语法）。PowerShell 也可以但部分语法需要调整。
@@ -1666,3 +1667,133 @@ aws sagemaker update-model-package \
 | LightGBM 作业失败：`No module named lightgbm` | requirements.txt 未打包 | 确认 `src/ml/reorder/requirements.txt` 存在且含 `lightgbm==4.3.0` |
 | `ValidationException: ModelPackageGroup not found` | Model group 未创建 | `terraform apply -target=module.sagemaker` |
 | 费用超预期 | ml.m5.large 按秒计费 (~$0.115/h) | 加 `--instance_type ml.t3.medium` 降低费用（训练更慢） |
+
+---
+
+## Phase 12 — Recommendation Model (Task B — ALS + Content-Based Hybrid)
+
+**目标**：Precision@10 ≥ 0.30
+
+| | 方案 A — 本地 PySpark | 方案 B — AWS EMR |
+|---|---|---|
+| 适用场景 | 快速调试 / 无 AWS 算力 | 生产训练 |
+| 前置条件 | Java 11 + PySpark | EMR 订阅 + terraform apply |
+| 费用 | 0 | ~$0.19/h（仅运行期间） |
+
+**前提**：Phase 10 完成，以下 Gold 数据存在：
+```
+s3://{lake_bucket}/gold/interaction_matrix/         ← ALS 训练数据
+s3://{lake_bucket}/gold/product_vectors/            ← Content-Based 特征
+s3://{lake_bucket}/gold/recommendation_ground_truth/ ← 评估 ground truth
+```
+
+---
+
+### 12.1 验证 Gold 数据就绪
+
+```bash
+LAKE_BUCKET=$(terraform -chdir="infra/terraform/environments/dev" output -raw lake_bucket)
+
+aws s3 ls s3://${LAKE_BUCKET}/gold/interaction_matrix/        --recursive | head -3
+aws s3 ls s3://${LAKE_BUCKET}/gold/product_vectors/           --recursive | head -3
+aws s3 ls s3://${LAKE_BUCKET}/gold/recommendation_ground_truth/ --recursive | head -3
+# 每个路径都应有 .parquet 文件
+```
+
+---
+
+### 12.2 运行 ALS 训练（方案 A — 本地 PySpark）
+
+```bash
+# Task B ALS + Content + Hybrid（本地 PySpark，读写 S3）
+python src/ml/recommendation/train_als.py \
+  --lake_bucket ${LAKE_BUCKET} \
+  --local
+
+# 内容相似度
+python src/ml/recommendation/content_based.py \
+  --lake_bucket ${LAKE_BUCKET}
+
+# 混合融合 + 最终评估
+python src/ml/recommendation/hybrid.py \
+  --lake_bucket ${LAKE_BUCKET}
+```
+
+**ALS 训练预期输出**：
+```
+Reading interaction matrix ...
+Interaction matrix: 13,307,953 interactions, 206,209 users, 49,685 products
+Training ALS (rank=50, maxIter=20, regParam=0.1) ...
+ALS training complete. Time: ~3–8 min
+Generating top-10 recommendations for 131,209 test users ...
+Written to s3://nextcart-dev-lake/ml/models/als/
+
+==================================================
+  ALS — Evaluation Results
+==================================================
+  Precision@10   : 0.30xx   ← 目标 ≥ 0.30
+  Recall@10      : 0.xx
+  NDCG@10        : 0.xx
+  Users evaluated: 131,209
+==================================================
+```
+
+---
+
+### 12.3 运行 ALS 训练（方案 B — EMR）
+
+```bash
+# 脚本不传 --local 时使用 s3:// (EMRFS)
+CLUSTER_ID=$(terraform -chdir="infra/terraform/environments/dev" output -raw emr_cluster_id)
+SCRIPTS_BUCKET=$(terraform -chdir="infra/terraform/environments/dev" output -raw glue_scripts_bucket)
+
+aws s3 cp src/ml/recommendation/train_als.py s3://${SCRIPTS_BUCKET}/ml/train_als.py
+
+STEP_ID=$(aws emr add-steps \
+  --cluster-id ${CLUSTER_ID} \
+  --steps Type=Spark,Name="train-als",\
+ActionOnFailure=CONTINUE,\
+Args=[--deploy-mode,cluster,--master,yarn,\
+s3://${SCRIPTS_BUCKET}/ml/train_als.py,\
+--lake_bucket,${LAKE_BUCKET}] \
+  --query 'StepIds[0]' --output text)
+
+aws emr describe-step --cluster-id ${CLUSTER_ID} --step-id ${STEP_ID} \
+  --query 'Step.Status.State' --output text
+```
+
+---
+
+### 12.4 验证模型产物
+
+```bash
+aws s3 ls s3://${LAKE_BUCKET}/ml/models/ --recursive | grep -E "(als|content|hybrid)"
+
+# 查看各模型指标
+aws s3 cp s3://${LAKE_BUCKET}/ml/models/als/metrics.json       - | python -m json.tool
+aws s3 cp s3://${LAKE_BUCKET}/ml/models/content/metrics.json   - | python -m json.tool
+aws s3 cp s3://${LAKE_BUCKET}/ml/models/hybrid/metrics.json    - | python -m json.tool
+```
+
+**预期指标 JSON（hybrid 应最高）**：
+```json
+{
+  "model": "Hybrid (ALS + Content)",
+  "precision_at_10": 0.31,
+  "recall_at_10": 0.xx,
+  "ndcg_at_10": 0.xx,
+  "n_users_evaluated": 131209
+}
+```
+
+---
+
+### 12.5 排查
+
+| 症状 | 原因 | 解决方法 |
+|------|------|---------|
+| `JAVA_HOME not set` | PySpark 需要 Java 11 | 安装 Java 11，设置 `JAVA_HOME` |
+| `No such file: gold/interaction_matrix/` | Phase 10 未完成 | 先运行 `recommendation_features.py` |
+| `OutOfMemoryError` (ALS 本地) | 全量矩阵 13M 行较大 | 加 `--rank 20 --max_iter 10` 降低内存；或用 `--sample_frac 0.1` 先跑小样本 |
+| Precision@10 < 0.30 | 默认超参数不够好 | 调整 `--rank 100 --reg_param 0.01`；加强 content 权重 `--alpha 0.6` |
+| EMR Step `FAILED` | 脚本路径或参数错误 | `aws emr describe-step ... --query Step.Status.FailureDetails` |

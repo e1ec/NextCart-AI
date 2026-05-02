@@ -16,6 +16,7 @@ import argparse
 from pyspark.ml.feature import StringIndexer
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--lake_bucket", required=True)
@@ -100,6 +101,47 @@ user_product = (
         "orders_since_last_purchase",
         F.col("user_total_orders") - F.col("up_last_order_number"),
     )
+)
+
+# ── Temporal features (window functions) ─────────────────────────────────────
+
+# days_since_prior_order on order N = days between order N-1 and N.
+# days from order K to the last prior order = sum(days_since_prior_order for orders K+1..N).
+_w_future = (
+    Window.partitionBy("user_id")
+    .orderBy("order_number")
+    .rowsBetween(1, Window.unboundedFollowing)
+)
+_order_timeline = user_orders.withColumn(
+    "days_to_last_prior_order",
+    F.coalesce(F.sum("days_since_prior_order").over(_w_future), F.lit(0.0)),
+)
+
+# Actual days elapsed since user last bought this product (vs. observation window end).
+days_since_last = (
+    user_product.select("user_id", "product_id", "up_last_order_number")
+    .join(
+        _order_timeline.select("user_id", "order_number", "days_to_last_prior_order"),
+        on=["user_id"],
+    )
+    .filter(F.col("order_number") == F.col("up_last_order_number"))
+    .select(
+        "user_id",
+        "product_id",
+        F.col("days_to_last_prior_order").alias("days_since_last_purchase"),
+    )
+)
+
+# appeared_in_last_3_orders: count of how many of the 3 most recent prior orders contain this product.
+_user_max_order = user_orders.groupBy("user_id").agg(
+    F.max("order_number").alias("max_order_number")
+)
+appeared_in_last3 = (
+    prior.join(user_orders.select("order_id", "user_id", "order_number"), "order_id")
+    .join(_user_max_order, "user_id")
+    .filter(F.col("order_number") >= F.col("max_order_number") - 2)
+    .groupBy("user_id", "product_id")
+    .agg(F.count("order_id").cast("int").alias("appeared_in_last_3_orders"))
 )
 
 # ── Product-level features ───────────────────────────────────────────────────
@@ -190,6 +232,8 @@ feature_df = (
         "product_id",
         how="left",
     )
+    .join(days_since_last, ["user_id", "product_id"], how="left")
+    .join(appeared_in_last3, ["user_id", "product_id"], how="left")
     .select(
         # Keys
         "user_id",
@@ -203,8 +247,11 @@ feature_df = (
         "user_product_reorder_rate",
         "user_product_order_frequency",
         "orders_since_last_purchase",
+        "days_since_last_purchase",
+        "appeared_in_last_3_orders",
         "up_avg_cart_position",
         # Product features
+        "product_total_orders",
         "product_global_reorder_rate",
         "add_to_cart_order_mean",
         # Product metadata (Source 2)
